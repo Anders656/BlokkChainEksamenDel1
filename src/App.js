@@ -4,43 +4,91 @@ import { ethers } from "ethers";
 // Components
 import Navigation from "./components/Navigation";
 import Task from "./components/Task";
-// import Logic from "./components/logic";
 
 // ABIs
 import TodoWeb3 from "./abis/TodoWeb3.json";
+import TodoListABI from "./TodoListABI.json";
 
 // Config
 import config from "./config.json";
 
+const CONTRACT_ADDRESS = "0xdd1E4C96faee94f34CA66A80D0c1A83879a8dE29";
+
 function App() {
+  // Tilstand fra TodoApp
+  const [simpleTasks, setSimpleTasks] = useState([]);
+  const [newSimpleTask, setNewSimpleTask] = useState("");
+  const [simpleContract, setSimpleContract] = useState(null);
+
+  // Tilstand fra App
   const [provider, setProvider] = useState(null);
   const [account, setAccount] = useState(null);
   const [todoWeb3, setTodoWeb3] = useState(null);
   const [taskCount, setTaskCount] = useState(null);
-
   const [tasks, setTasks] = useState([]);
   const [activeFilter, setActiveFilter] = useState("all");
   const [filteredTasks, setFilteredTasks] = useState([]);
   const [newTask, setNewTask] = useState("");
 
-  const loadBlockchainData = async () => {
-    // Load Web3
-    const provider = new ethers.providers.Web3Provider(window.ethereum);
-    setProvider(provider);
-    const network = await provider.getNetwork();
+  // ✅ Load blockchain data robust
+  useEffect(() => {
+    const init = async () => {
+      if (window.ethereum) {
+        const _provider = new ethers.providers.Web3Provider(window.ethereum);
+        setProvider(_provider);
 
-    // Load Contract
-    const todoWeb3 = new ethers.Contract(
-      config[network.chainId].TodoWeb3.address,
-      TodoWeb3,
-      provider
-    );
-    setTodoWeb3(todoWeb3);
-    await getAllTasks(todoWeb3);
+        const _signer = _provider.getSigner();
+        const _simpleContract = new ethers.Contract(CONTRACT_ADDRESS, TodoListABI, _signer);
+        setSimpleContract(_simpleContract);
+
+        const network = await _provider.getNetwork();
+
+        // ✅ ROBUST sjekk
+        const networkConfig = config[network.chainId];
+        if (!networkConfig || !networkConfig.TodoWeb3) {
+          alert(`Unsupported network (${network.chainId}). Please connect to Sepolia.`);
+          return;
+        }
+
+        const _todoWeb3 = new ethers.Contract(
+          networkConfig.TodoWeb3.address,
+          TodoWeb3.abi,
+          _provider
+        );
+        setTodoWeb3(_todoWeb3);
+
+        await loadTasks(_todoWeb3);
+        await loadSimpleTasks(_simpleContract);
+      }
+    };
+    init();
+  }, []);
+
+  // ✅ SimpleContract
+  const loadSimpleTasks = async (contract) => {
+    const tasks = await contract.getTasks();
+    setSimpleTasks(tasks);
   };
 
-  const getAllTasks = async (todoWeb3) => {
-    console.log(todoWeb3);
+  const addSimpleTask = async () => {
+    if (simpleContract && newSimpleTask) {
+      const tx = await simpleContract.addTask(newSimpleTask);
+      await tx.wait();
+      setNewSimpleTask("");
+      await loadSimpleTasks(simpleContract);
+    }
+  };
+
+  const completeSimpleTask = async (taskId) => {
+    if (simpleContract) {
+      const tx = await simpleContract.completeTask(taskId);
+      await tx.wait();
+      await loadSimpleTasks(simpleContract);
+    }
+  };
+
+  // ✅ TodoWeb3
+  const loadTasks = async (todoWeb3) => {
     const taskCount = await todoWeb3.taskCount();
     setTaskCount(taskCount);
 
@@ -49,35 +97,20 @@ function App() {
       const task = await todoWeb3.tasks(i);
       tasks.push(task);
     }
-    console.log(tasks);
     setTasks(tasks);
     setFilteredTasks(tasks);
   };
 
-  const handleChange = (e) => {
-    setNewTask(e.currentTarget.value);
-    console.log(e.currentTarget.value);
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    await addTask(newTask);
-  };
-
   const addTask = async (t) => {
-    // Add task
     const signer = await provider.getSigner();
     let transaction = await todoWeb3.connect(signer).createTask(t);
     await transaction.wait();
     setNewTask("");
-
-    await getAllTasks(todoWeb3);
+    await loadTasks(todoWeb3);
   };
 
   const filterTasks = (e) => {
     const selectedFilter = e.currentTarget.id;
-    console.log(`activeFilter: ${activeFilter}`);
-    console.log(`selectedFilter: ${selectedFilter}`);
     if (selectedFilter !== activeFilter) {
       let filteredTasks = tasks;
       let completed = false;
@@ -85,12 +118,8 @@ function App() {
         if (selectedFilter === "completed") {
           completed = true;
         }
-        console.log(`completed: ${completed}`);
-        filteredTasks = tasks.filter((task) => {
-          return task.completed === completed;
-        });
+        filteredTasks = tasks.filter((task) => task.completed === completed);
       }
-      console.log(filteredTasks);
       setFilteredTasks(filteredTasks);
       setActiveFilter(selectedFilter);
     }
@@ -98,28 +127,44 @@ function App() {
 
   const handleKeyDown = async (e) => {
     if (e.key === "Enter") {
-      console.log("do validate");
       let inputTask = e.currentTarget.value;
       await addTask(inputTask);
     }
   };
 
   const clearCompleted = async () => {
-    // Clear completed tasks
     const signer = await provider.getSigner();
     let transaction = await todoWeb3.connect(signer).clearCompletedTasks();
     await transaction.wait();
     setNewTask("");
-
-    await getAllTasks(todoWeb3);
+    await loadTasks(todoWeb3);
   };
-
-  useEffect(() => {
-    loadBlockchainData();
-  }, []);
 
   return (
     <>
+      <Navigation account={account} connectWallet={() => {}} />
+
+      {/* Simple Contract UI */}
+      <div>
+        <h1>Gjøremålsliste (Simple Contract)</h1>
+        <input
+          value={newSimpleTask}
+          onChange={(e) => setNewSimpleTask(e.target.value)}
+        />
+        <button onClick={addSimpleTask}>Legg til oppgave</button>
+        <ul>
+          {simpleTasks.map((task, index) => (
+            <li key={index}>
+              {task.description}{" "}
+              {task.completed ? "✔" : (
+                <button onClick={() => completeSimpleTask(task.id)}>Fullfør</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* TodoWeb3 UI */}
       <div className="wrapper">
         <div className="task-input">
           <ion-icon name="create-outline">&#127919;</ion-icon>
@@ -129,34 +174,16 @@ function App() {
             className="form-control"
             placeholder="Type a task and Enter"
             value={newTask}
-            onChange={handleChange}
+            onChange={(e) => setNewTask(e.currentTarget.value)}
             onKeyDown={handleKeyDown}
             required
           />
         </div>
         <div className="controls">
           <div className="filters">
-            <span
-              onClick={filterTasks}
-              className={activeFilter === "all" ? "active" : ""}
-              id="all"
-            >
-              All
-            </span>
-            <span
-              onClick={filterTasks}
-              className={activeFilter === "pending" ? "active" : ""}
-              id="pending"
-            >
-              Pending
-            </span>
-            <span
-              onClick={filterTasks}
-              className={activeFilter === "completed" ? "active" : ""}
-              id="completed"
-            >
-              Completed
-            </span>
+            <span onClick={filterTasks} className={activeFilter === "all" ? "active" : ""} id="all">All</span>
+            <span onClick={filterTasks} className={activeFilter === "pending" ? "active" : ""} id="pending">Pending</span>
+            <span onClick={filterTasks} className={activeFilter === "completed" ? "active" : ""} id="completed">Completed</span>
           </div>
           <button
             className="clear-btn active"
